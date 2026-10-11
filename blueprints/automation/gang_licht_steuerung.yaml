@@ -1,0 +1,410 @@
+# =====================================================================
+#  Gang Lichtsteuerung
+#  Version: 1.4.1
+#  Stand:   2026-10-11
+# ---------------------------------------------------------------------
+#  Änderungshistorie
+#  1.4.1  2026-10-11  Fehlerbehebungen:
+#                     - Lux-Trigger: !input ist in Templates nicht
+#                       erlaubt, jetzt über trigger_variables.
+#                     - Ausschalt- und Wiedereinschaltverzögerung über
+#                       "for:" am Trigger statt "delay": bei mode
+#                       restart brach jeder andere Trigger die Wartezeit
+#                       ab (Licht blieb an bzw. Helfer blieb aus).
+#                     - Automatische Rückkehr in den Automatikmodus
+#                       schaltet das Licht nicht mehr ein.
+#                     - Mindestversion 2024.8 (Schreibweise "action:").
+#  1.4.0  2026-06-22  Vorherige Fassung (Gist).
+# =====================================================================
+
+blueprint:
+  name: "\U0001F4A1 Gang Lichtsteuerung"
+  description: "# \U0001F4A1 Gang Lichtsteuerung\n**Version: 1.4.1** – 2026-10-11\n\nSchaltet
+    das Ganglicht automatisch über Bewegungssensoren (IR und/oder Radar).\n\n<details>
+    <summary><b>Funktionsweise</b></summary>\n\n**Einschalten:** Das Licht wird eingeschaltet,
+    wenn Bewegung erkannt wird, der Lux-Wert unter dem Schwellwert liegt und die aktuelle
+    Uhrzeit im konfigurierten Zeitfenster liegt.\n\n**Ausschalten:** Nach der letzten
+    Bewegung läuft ein Timer. Erst wenn alle Sensoren keine Bewegung mehr melden und
+    der Timer abgelaufen ist, wird das Licht ausgeschaltet. Das Licht schaltet auch
+    aus, wenn das Zeitfenster endet oder der Lux-Wert den Schwellwert überschreitet.\n\n**Zeitfenster:**
+    Separate Zeitfenster für Arbeitstage und Wochenenden/Feiertage. Feiertage werden
+    automatisch über die Workday-Integration erkannt.\n\n**Manueller Schalter:** Über
+    einen `input_boolean`-Helfer kann das Licht manuell ein- und ausgeschaltet werden.
+    Nach dem manuellen Ausschalten wird eine konfigurierbare Wiedereinschaltverzögerung
+    abgewartet, bevor Bewegungssensoren das Licht erneut einschalten können. Danach
+    wechselt der Helfer automatisch wieder in den Automatikmodus (`on`).\n</details>\n\n<details>
+    <summary><b>Voraussetzungen</b></summary>\n\n- Workday-Integration eingerichtet
+    (Einstellungen → Geräte & Dienste → Workday)\n- Mindestens ein Bewegungssensor
+    (IR oder Radar)\n- Lichtsensor (optional – ohne Sensor entfällt die Helligkeitsprüfung)\n-
+    `input_boolean`-Helfer für den manuellen Schalter erstellen:\n  **Einstellungen
+    → Geräte & Dienste → Helfer → Schalter hinzufügen**\n\n</details>\n\n**Pflichtfelder
+    = \\***\n"
+  domain: automation
+  author: Tobias
+  homeassistant:
+    min_version: 2024.8.0
+  input:
+    sensoren:
+      name: Sensoren
+      icon: mdi:motion-sensor
+      collapsed: true
+      input:
+        motion_sensors:
+          name: Bewegungssensoren *
+          description: 'Wähle einen oder mehrere IR- und/oder Radarsensoren im Gang
+            aus. Das Licht reagiert, sobald einer der Sensoren Bewegung meldet.
+
+
+            **Pflichtfeld = \***
+
+            '
+          selector:
+            entity:
+              domain:
+              - binary_sensor
+              device_class:
+              - motion
+              multiple: true
+              reorder: false
+        lux_sensor:
+          name: Lichtsensor (Lux)
+          description: 'Sensor für die aktuelle Helligkeit im Gang oder in der Nähe.
+            Das Licht wird nur eingeschaltet, wenn der Wert unter dem Lux-Schwellwert
+            liegt.
+
+
+            **Optional** – wird kein Sensor ausgewählt, entfällt die Helligkeitsprüfung
+            und das Licht schaltet unabhängig vom Lux-Wert ein.
+
+            '
+          default: ''
+          selector:
+            entity:
+              domain:
+              - sensor
+              device_class:
+              - illuminance
+              multiple: false
+              reorder: false
+        lux_threshold:
+          name: Lux-Schwellwert
+          description: 'Das Licht wird nur eingeschaltet, wenn der aktuelle Lux-Wert
+            **unter** diesem Wert liegt. Wird kein Lichtsensor verwendet, hat dieser
+            Wert keine Wirkung.
+
+
+            Standard = 50 lx
+
+            '
+          default: 50
+          selector:
+            number:
+              min: 0.0
+              max: 1000.0
+              unit_of_measurement: lx
+              mode: slider
+              step: 1.0
+    aktor:
+      name: Schaltaktor *
+      icon: mdi:lightbulb-outline
+      collapsed: true
+      input:
+        light_switch:
+          name: Schaltaktor (Licht) *
+          description: 'Der Schaltaktor, der das Licht im Gang steuert. Unterstützt
+            sowohl `light`- als auch `switch`-Entitäten.
+
+
+            **Pflichtfeld = \***
+
+            '
+          selector:
+            entity:
+              domain:
+              - light
+              - switch
+              multiple: false
+              reorder: false
+    manueller_schalter:
+      name: Manueller Schalter *
+      icon: mdi:toggle-switch-outline
+      collapsed: true
+      input:
+        manual_switch:
+          name: Manueller Schalter (input_boolean) *
+          description: "Ein `input_boolean`-Helfer als manueller Ein-/Ausschalter
+            für das Licht.\n\n**Bedienung:**\n- Helfer auf `on` setzen → Licht sofort
+            einschalten (ohne Bedingungen)\n- Helfer auf `off` setzen → Licht ausschalten
+            + Wiedereinschaltverzögerung starten.\n  Nach Ablauf der Verzögerung wird
+            der Helfer automatisch wieder auf `on`\n  gesetzt und die Bewegungssensoren
+            übernehmen wieder die Steuerung.\n\n\n**Helfer erstellen:** Einstellungen
+            → Geräte & Dienste → Helfer → Schalter hinzufügen\n\n**Pflichtfeld = \\***\n"
+          selector:
+            entity:
+              domain:
+              - input_boolean
+              multiple: false
+              reorder: false
+        reactivation_delay:
+          name: Wiedereinschaltverzögerung
+          description: 'Nach dem manuellen Ausschalten wird diese Zeit gewartet, bevor
+            Bewegungssensoren das Licht wieder einschalten können. Der Helfer wechselt
+            nach Ablauf automatisch zurück in den Automatikmodus.
+
+
+            Standard = 1 Minute
+
+            '
+          default:
+            minutes: 1
+          selector:
+            duration:
+              enable_second: true
+    timer:
+      name: Ausschaltverzögerung *
+      icon: mdi:timer-outline
+      collapsed: true
+      input:
+        no_motion_timeout:
+          name: Ausschaltverzögerung *
+          description: 'Wie lange nach der letzten erkannten Bewegung das Licht noch
+            an bleibt. Der Timer startet neu, sobald erneut Bewegung erkannt wird.
+
+
+            Standard = 2 Minuten
+
+            '
+          default:
+            minutes: 2
+          selector:
+            duration:
+              enable_second: true
+    workday:
+      name: Workday-Sensor *
+      icon: mdi:calendar-check-outline
+      collapsed: true
+      input:
+        workday_sensor:
+          name: Workday-Sensor *
+          description: 'Workday-Sensor der Home Assistant Workday-Integration. Erkennt
+            automatisch Werktage, Wochenenden und Feiertage.
+
+
+            Die Integration wird eingerichtet unter: **Einstellungen → Geräte & Dienste
+            → Workday**
+
+
+            **Pflichtfeld = \***
+
+            '
+          selector:
+            entity:
+              domain:
+              - binary_sensor
+              integration: workday
+              multiple: false
+              reorder: false
+    zeitfenster_arbeitstage:
+      name: Zeitfenster – Arbeitstage
+      icon: mdi:briefcase-clock-outline
+      collapsed: true
+      input:
+        weekday_start:
+          name: Startzeit (Arbeitstage)
+          description: 'Ab wann das System an Arbeitstagen aktiv ist. Feiertage gelten
+            automatisch als Wochenende (Workday-Sensor).
+
+
+            Standard = 06:00 Uhr
+
+            '
+          default: 06:00:00
+          selector:
+            time: {}
+        weekday_end:
+          name: Endzeit (Arbeitstage)
+          description: 'Bis wann das System an Arbeitstagen aktiv ist. Nach diesem
+            Zeitpunkt wird das Licht nicht mehr eingeschaltet.
+
+
+            Standard = 23:00 Uhr
+
+            '
+          default: '23:00:00'
+          selector:
+            time: {}
+    zeitfenster_wochenende:
+      name: Zeitfenster – Wochenende & Feiertage
+      icon: mdi:sofa-outline
+      collapsed: true
+      input:
+        weekend_start:
+          name: Startzeit (Wochenende & Feiertage)
+          description: 'Ab wann das System an Wochenenden und Feiertagen aktiv ist.
+
+
+            Standard = 08:00 Uhr
+
+            '
+          default: 08:00:00
+          selector:
+            time: {}
+        weekend_end:
+          name: Endzeit (Wochenende & Feiertage)
+          description: 'Bis wann das System an Wochenenden und Feiertagen aktiv ist.
+
+
+            Standard = 23:30 Uhr
+
+            '
+          default: '23:30:00'
+          selector:
+            time: {}
+  source_url: https://github.com/tobias-irlinger/tobi_homeassistant_blueprints/blob/main/blueprints/automation/gang_licht_steuerung.yaml
+mode: restart
+max_exceeded: silent
+variables:
+  motion_sensors: !input motion_sensors
+  lux_sensor: !input lux_sensor
+  lux_threshold: !input lux_threshold
+  light_switch: !input light_switch
+  manual_switch: !input manual_switch
+  reactivation_delay: !input reactivation_delay
+  no_motion_timeout: !input no_motion_timeout
+  workday_sensor: !input workday_sensor
+  weekday_start: !input weekday_start
+  weekday_end: !input weekday_end
+  weekend_start: !input weekend_start
+  weekend_end: !input weekend_end
+  is_workday: '{{ is_state(workday_sensor, ''on'') }}'
+  active_start: '{{ weekday_start if is_workday else weekend_start }}'
+  active_end: '{{ weekday_end if is_workday else weekend_end }}'
+  in_time_window: '{{ active_start <= now().strftime(''%H:%M:%S'') < active_end }}
+
+    '
+  any_motion: '{{ expand(motion_sensors) | selectattr(''state'', ''eq'', ''on'') |
+    list | count > 0 }}
+
+    '
+  lux_ok: '{{ lux_sensor == '''' or states(lux_sensor) | float(lux_threshold) < lux_threshold
+    }}
+
+    '
+  auto_mode: '{{ is_state(manual_switch, ''on'') }}'
+trigger_variables:
+  lux_sensor_tv: !input lux_sensor
+  lux_threshold_tv: !input lux_threshold
+trigger:
+- platform: state
+  entity_id: !input motion_sensors
+  to: 'on'
+  id: motion_on
+- platform: state
+  entity_id: !input motion_sensors
+  to: 'off'
+  for: !input no_motion_timeout
+  id: motion_off
+- platform: state
+  entity_id: !input manual_switch
+  to: 'on'
+  id: manual_on
+- platform: state
+  entity_id: !input manual_switch
+  to: 'off'
+  id: manual_off
+- platform: state
+  entity_id: !input manual_switch
+  to: 'off'
+  for: !input reactivation_delay
+  id: manual_reactivate
+- platform: time
+  at: !input weekday_start
+  id: time_check
+- platform: time
+  at: !input weekday_end
+  id: time_check
+- platform: time
+  at: !input weekend_start
+  id: time_check
+- platform: time
+  at: !input weekend_end
+  id: time_check
+- platform: state
+  entity_id: !input workday_sensor
+  id: time_check
+- platform: template
+  value_template: '{{ lux_sensor_tv != '''' and states(lux_sensor_tv) | float(-1)
+    >= lux_threshold_tv | float }}
+
+    '
+  id: lux_change
+condition: []
+action:
+- choose:
+  - conditions:
+    - condition: trigger
+      id: motion_on
+    - condition: template
+      value_template: '{{ auto_mode }}'
+    - condition: template
+      value_template: '{{ in_time_window }}'
+    - condition: template
+      value_template: '{{ lux_ok }}'
+    sequence:
+    - action: homeassistant.turn_on
+      target:
+        entity_id: !input light_switch
+  - conditions:
+    - condition: trigger
+      id: motion_off
+    - condition: template
+      value_template: '{{ auto_mode }}'
+    - condition: template
+      value_template: '{{ not any_motion }}'
+    sequence:
+    - action: homeassistant.turn_off
+      target:
+        entity_id: !input light_switch
+  - conditions:
+    - condition: trigger
+      id: manual_on
+    # Nicht reagieren, wenn diese Automation den Helfer selbst wieder
+    # eingeschaltet hat (Rückkehr in den Automatikmodus).
+    - condition: template
+      value_template: '{{ trigger.to_state.context.id != this.context.id }}'
+    sequence:
+    - action: homeassistant.turn_on
+      target:
+        entity_id: !input light_switch
+  - conditions:
+    - condition: trigger
+      id: manual_off
+    sequence:
+    - action: homeassistant.turn_off
+      target:
+        entity_id: !input light_switch
+  - conditions:
+    - condition: trigger
+      id: manual_reactivate
+    sequence:
+    - action: input_boolean.turn_on
+      target:
+        entity_id: !input manual_switch
+  - conditions:
+    - condition: trigger
+      id: time_check
+    - condition: template
+      value_template: '{{ not in_time_window }}'
+    sequence:
+    - action: homeassistant.turn_off
+      target:
+        entity_id: !input light_switch
+  - conditions:
+    - condition: trigger
+      id: lux_change
+    - condition: template
+      value_template: '{{ not lux_ok }}'
+    sequence:
+    - action: homeassistant.turn_off
+      target:
+        entity_id: !input light_switch

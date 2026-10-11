@@ -1,0 +1,1037 @@
+blueprint:
+  name: PID Mischkreisregelung für Kachelofen-Pufferspeicher v5.2
+  description: 'Regelt die Vorlauftemperatur mit echter PID-Steuerung (P+I+D). Optimiert
+    für Pufferspeicher-Systeme.
+
+
+    **Version:** 5.2 | **Benötigt:** 3 Number-Helper + Optional 1 Text-Helper
+
+
+    **Änderungen v5.2:**
+
+    - FIX: Vorlauffühler ohne gültigen Wert schließt das Ventil (bisher als 0 °C
+    gelesen und Frostschutz ausgelöst, Ventil fuhr auf)
+
+    - FIX: Ventil schließt bei Pumpenstopp auch, wenn das Ereignis während eines
+    Stellvorgangs verloren ging; schließt jetzt über die volle Laufzeit
+
+    - FIX: Frostschutz öffnet nur bei laufender Pumpe
+
+    - FIX: Optionale Felder können leer bleiben (Automation lud sonst nicht)
+
+    - FIX: Regelintervall wird tatsächlich verwendet; I- und D-Anteil rechnen mit
+    der real vergangenen Zeit
+
+    - FIX: Stellmotoren über homeassistant.turn_on/off (auch input_boolean)
+
+    - Smart Start nur bei gültigen Fühlerwerten
+
+
+    **Änderungen v5.1:**
+
+    - FIX: Stellmotor-Verriegelung (Interlock) - AUF und ZU können nie gleichzeitig
+    an sein
+
+    - Vor jedem Einschalten wird die Gegenrichtung abgeschaltet + 500ms Pause
+
+
+    **Änderungen v5.0 (Bugfixes aus Trace-Analyse):**
+
+    - FIX: Entity-Erkennung komplett überarbeitet (.entity_id Bug behoben)
+
+    - FIX: mode: single statt restart (verhindert Stellmotor-Dauerlauf)
+
+    - FIX: Sensor-State-Trigger entfernt (nur time_pattern + Events)
+
+    - FIX: Integral Wind-up bei Pumpe-aus verhindert
+
+    - FIX: Stellmotor-Sicherheitsabschaltung am Automations-Start
+
+    - FIX: Status-Sensor wird jetzt korrekt geschrieben
+
+    - FIX: Rücklauf-Sensor wird jetzt korrekt gelesen
+
+
+    **Wichtig:** Vor der Konfiguration Helper erstellen (Anleitung in den Abschnitten)!
+
+    '
+  source_url: https://github.com/tobias-irlinger/tobi_homeassistant_blueprints/blob/main/blueprints/automation/pid_mischkreis.yaml
+  domain: automation
+  author: Tobias
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    grundeinstellungen:
+      name: Grundeinstellungen
+      icon: mdi:cog
+      collapsed: false
+      description: "**\U0001F3AF Basis-Konfiguration der Mischkreis-Regelung**\n\n**Benötigte
+        Hardware:**\n• ESBE Stellmotor (oder kompatibel) mit 2 Schalt-Ausgängen (AUF/ZU)\n•
+        Vorlauftemperatur-Sensor (nach Mischer)\n• Pufferspeicher-Sensor (oben)\n\n**Empfohlene
+        Sensoren:**\n• PT1000 oder NTC10K Anlegefühler\n• Shelly Plus Add-On + DS18B20\n•
+        ESPHome mit Dallas-Sensoren\n\n**\U0001F517 Optional:** Pumpen-Status von
+        der Pumpensteuerungs-Blueprint überwachen\n"
+      input:
+        actuator_open:
+          name: Stellmotor AUF
+          description: Schalter zum Öffnen des Mischventils (erhöht Vorlauftemperatur)
+          selector:
+            entity:
+              domain:
+              - switch
+              - input_boolean
+              multiple: false
+              reorder: false
+        actuator_close:
+          name: Stellmotor ZU
+          description: Schalter zum Schließen des Mischventils (senkt Vorlauftemperatur)
+          selector:
+            entity:
+              domain:
+              - switch
+              - input_boolean
+              multiple: false
+              reorder: false
+        flow_temp_sensor:
+          name: Vorlauftemperatur-Sensor
+          description: Temperatursensor im Vorlauf nach dem Mischventil (Ist-Wert
+            für PID)
+          selector:
+            entity:
+              domain:
+              - sensor
+              device_class:
+              - temperature
+              multiple: false
+              reorder: false
+        buffer_temp_sensor:
+          name: Pufferspeicher-Sensor (oben)
+          description: Temperatursensor im oberen Bereich des Pufferspeichers
+          selector:
+            entity:
+              domain:
+              - sensor
+              device_class:
+              - temperature
+              multiple: false
+              reorder: false
+        heating_circuit_pump_status:
+          name: Heizkreispumpe Status
+          description: Status der Heizkreispumpe (wird von erster Blueprint gesteuert)
+            - PID regelt nur wenn Pumpe läuft
+          default: []
+          selector:
+            entity:
+              domain:
+              - switch
+              - input_boolean
+              - binary_sensor
+              multiple: false
+              reorder: false
+        manual_mode:
+          name: Manueller Modus
+          description: Schalter für manuellen Betrieb (deaktiviert PID-Regelung)
+          default: []
+          selector:
+            entity:
+              domain:
+              - input_boolean
+              multiple: false
+              reorder: false
+    temperaturen:
+      name: Temperatur-Sollwerte
+      icon: mdi:thermometer
+      collapsed: true
+      description: "**\U0001F321️ Ziel-Vorlauftemperatur festlegen**\n\n**Option 1:**
+        Feste Temperatur (Standard)\n**Option 2:** Input Number Helper für UI-Steuerung\n**Option
+        3:** Heizkurve aktivieren (siehe unten)\n\n**\U0001F6E1️ Sicherheitsgrenzen:**\n•
+        Max. Vorlauf: Notabschaltung bei Überschreitung\n• Min. Vorlauf: Frostschutz
+        bei Unterschreitung\n• Min. Puffer: Ventil schließt wenn Puffer zu kalt\n"
+      input:
+        target_flow_temp:
+          name: Ziel-Vorlauftemperatur
+          description: Gewünschte Vorlauftemperatur (kann auch Input Number sein für
+            UI-Steuerung)
+          default: []
+          selector:
+            entity:
+              domain:
+              - input_number
+              - number
+              - sensor
+              multiple: false
+              reorder: false
+        target_flow_temp_static:
+          name: Statische Vorlauftemperatur (Fallback)
+          description: Fester Wert wenn keine Entity gewählt wurde
+          default: 45
+          selector:
+            number:
+              min: 20.0
+              max: 80.0
+              step: 1.0
+              unit_of_measurement: °C
+              mode: slider
+        min_buffer_temp:
+          name: Minimale Pufferspeicher-Temperatur
+          description: Mischventil schließt wenn Puffer unter dieser Temperatur fällt
+          default: 40
+          selector:
+            number:
+              min: 20.0
+              max: 90.0
+              step: 1.0
+              unit_of_measurement: °C
+              mode: slider
+        max_flow_temp:
+          name: Maximale Vorlauftemperatur
+          description: Sicherheitsgrenze - Ventil schließt bei Überschreitung
+          default: 60
+          selector:
+            number:
+              min: 30.0
+              max: 90.0
+              step: 1.0
+              unit_of_measurement: °C
+              mode: slider
+        min_flow_temp:
+          name: Minimale Vorlauftemperatur
+          description: Frostschutz - Ventil öffnet bei Unterschreitung
+          default: 15
+          selector:
+            number:
+              min: 5.0
+              max: 30.0
+              step: 1.0
+              unit_of_measurement: °C
+              mode: slider
+    heizkurve:
+      name: Heizkurve (Optional)
+      icon: mdi:chart-line
+      collapsed: true
+      description: "**\U0001F4C8 Passt Vorlauf automatisch an Außentemperatur an**\n\n**Beispiele:**\n\n**Fußbodenheizung
+        (Neubau):**\n• -20°C → 45°C\n• 0°C → 35°C  \n• +20°C → 25°C\n\n**Radiatoren
+        (Altbau):**\n• -20°C → 65°C\n• 0°C → 50°C\n• +20°C → 30°C\n\n**\U0001F525
+        Brennwert-Optimierung:**\n**Ziel:** Rücklauf < 47°C für Kondensation\n• Vorlauf
+        so niedrig wie möglich halten\n• Heizkurve nach unten verschieben\n"
+      input:
+        enable_heating_curve:
+          name: Heizkurve aktivieren
+          description: Vorlauftemperatur automatisch an Außentemperatur anpassen
+          default: false
+          selector:
+            boolean: {}
+        outside_temp_sensor:
+          name: Außentemperatur-Sensor
+          description: Sensor für die Außentemperatur
+          default: []
+          selector:
+            entity:
+              domain:
+              - sensor
+              device_class:
+              - temperature
+              multiple: false
+              reorder: false
+        heating_curve_20:
+          name: Vorlauf bei -20°C Außentemperatur
+          description: Vorlauftemperatur-Sollwert bei -20°C außen
+          default: 60
+          selector:
+            number:
+              min: 30.0
+              max: 80.0
+              step: 1.0
+              unit_of_measurement: °C
+              mode: slider
+        heating_curve_0:
+          name: Vorlauf bei 0°C Außentemperatur
+          description: Vorlauftemperatur-Sollwert bei 0°C außen
+          default: 45
+          selector:
+            number:
+              min: 20.0
+              max: 70.0
+              step: 1.0
+              unit_of_measurement: °C
+              mode: slider
+        heating_curve_20_plus:
+          name: Vorlauf bei +20°C Außentemperatur
+          description: Vorlauftemperatur-Sollwert bei +20°C außen (Heizgrenze)
+          default: 25
+          selector:
+            number:
+              min: 15.0
+              max: 40.0
+              step: 1.0
+              unit_of_measurement: °C
+              mode: slider
+    pid_parameter:
+      name: PID-Parameter
+      icon: mdi:tune
+      collapsed: true
+      description: "**⚙️ WICHTIG: Zuerst Helper erstellen!**\n\n[→ Helper erstellen](https://my.home-assistant.io/redirect/helpers/)\n\n**Benötigt:
+        3x Number Helper**\n\n**1️⃣ Number: PID Integral Speicher**\n```\nName: PID
+        Integral Speicher\nMin: -200, Max: 200, Schritt: 0.1\nIcon: mdi:sigma, Modus:
+        Feld\n```\n\n**2️⃣ Number: PID Letzter Fehler**\n```\nName: PID Letzter Fehler\nMin:
+        -50, Max: 50, Schritt: 0.1\nIcon: mdi:delta, Modus: Feld\n```\n\n**3️⃣ Number:
+        Ventilposition**\n```\nName: Ventilposition\nMin: 0, Max: 100, Schritt: 1,
+        Einheit: %\nIcon: mdi:valve, Modus: Schieberegler\n```\n\n**\U0001F527 PID-Tuning
+        Tipps:**\n\n• **Überschwingen?** → Kp runter (2.0), Kd hoch (2.0)\n• **Zu
+        langsam?** → Kp hoch (4.0), Ki hoch (0.1)\n• **Bleibt Fehler?** → Ki hoch
+        (0.1)\n• **Integral läuft weg?** → Ki runter (0.01), Max kleiner (30)\n• **Pendelt?**
+        → Kp runter, Totzone größer (1.0°C)\n\n**\U0001F4D6 PID-Theorie Kurzform:**\n•
+        **P:** Reagiert auf Fehler → Je größer Abweichung, desto stärker\n• **I:**
+        Sammelt Fehler über Zeit → Beseitigt bleibende Abweichung\n• **D:** Bremst
+        bei Annäherung → Verhindert Überschwingen\n"
+      input:
+        pid_integral_helper:
+          name: PID Integral-Speicher (Helper)
+          description: Input Number Helper zum Speichern des Integral-Anteils (wird
+            automatisch verwaltet)
+          selector:
+            entity:
+              domain:
+              - input_number
+              multiple: false
+              reorder: false
+        pid_last_error_helper:
+          name: PID Letzter Fehler-Speicher (Helper)
+          description: Input Number Helper zum Speichern des letzten Fehlers für D-Anteil
+            (wird automatisch verwaltet)
+          selector:
+            entity:
+              domain:
+              - input_number
+              multiple: false
+              reorder: false
+        pid_valve_position_helper:
+          name: Ventilposition-Speicher (Helper)
+          description: Input Number Helper zum Speichern der geschätzten Ventilposition
+            0-100% (wird automatisch verwaltet)
+          selector:
+            entity:
+              domain:
+              - input_number
+              multiple: false
+              reorder: false
+        pid_kp:
+          name: P-Anteil (Kp)
+          description: Proportionalanteil - Je höher, desto stärker reagiert die Regelung
+            auf Abweichungen
+          default: 3.0
+          selector:
+            number:
+              min: 0.1
+              max: 20.0
+              step: 0.1
+              mode: box
+        pid_ki:
+          name: I-Anteil (Ki)
+          description: Integralanteil - Beseitigt bleibende Regelabweichungen
+          default: 0.05
+          selector:
+            number:
+              min: 0.0
+              max: 1.0
+              step: 0.01
+              mode: box
+        pid_kd:
+          name: D-Anteil (Kd)
+          description: Differentialanteil - Dämpft Überschwingen
+          default: 1.0
+          selector:
+            number:
+              min: 0.0
+              max: 10.0
+              step: 0.1
+              mode: box
+        pid_integral_max:
+          name: Maximaler Integral-Wert (Anti-Windup)
+          description: Begrenzt den I-Anteil um Integral-Windup zu verhindern
+          default: 50
+          selector:
+            number:
+              min: 10.0
+              max: 200.0
+              step: 10.0
+              mode: box
+        control_interval:
+          name: Regelintervall (Sekunden)
+          description: Wie oft die PID-Regelung berechnet wird. Sicherheitsprüfungen
+            laufen unabhängig davon alle 10 Sekunden.
+          default: 30
+          selector:
+            number:
+              min: 10.0
+              max: 300.0
+              step: 10.0
+              unit_of_measurement: s
+              mode: slider
+    stellmotor_einstellungen:
+      name: Stellmotor-Einstellungen
+      icon: mdi:engine
+      collapsed: true
+      description: "**\U0001F527 Stellmotor kalibrieren und konfigurieren**\n\n**⏱️
+        Laufzeit ermitteln:**\n1. Ventil manuell ganz ZU fahren (Motor stoppt)\n2.
+        Stoppuhr starten\n3. Ventil manuell ganz AUF fahren (Motor stoppt)\n4. Gemessene
+        Zeit hier eintragen\n\n**\U0001F4A1 Typisch:** ESBE = 120s, andere 90-180s\n\n**\U0001F680
+        Smart Start:**\n• **AN:** Ventil öffnet sofort auf geschätzte Position (schneller)\n•
+        **AUS:** Ventil regelt langsam hoch (sicherer)\n\n**\U0001F4BE Ventil bei
+        Pumpenstopp schließen:**\n• **AN:** Energiesparmodus (spart Puffer-Wärme)\n•
+        **AUS:** Schnellerer Neustart\n\n**⏲️ Pumpen-Anlaufverzögerung:**\nWartezeit
+        nach Pumpenstart bis Durchfluss aufgebaut ist\n"
+      input:
+        actuator_runtime:
+          name: Stellmotor-Laufzeit für 0-100%
+          description: Zeit die der Motor braucht um von ganz zu nach ganz auf zu
+            fahren
+          default: 120
+          selector:
+            number:
+              min: 30.0
+              max: 600.0
+              step: 10.0
+              unit_of_measurement: s
+              mode: slider
+        min_actuator_pulse:
+          name: Minimale Stellzeit
+          description: Kürzeste Schaltzeit des Motors (verhindert zu häufiges Schalten)
+          default: 5
+          selector:
+            number:
+              min: 1.0
+              max: 30.0
+              step: 1.0
+              unit_of_measurement: s
+              mode: slider
+        max_actuator_runtime:
+          name: Maximale Laufzeit pro Zyklus
+          description: Sicherheitsgrenze für maximale Stellzeit in einem Regelzyklus
+          default: 60
+          selector:
+            number:
+              min: 10.0
+              max: 300.0
+              step: 10.0
+              unit_of_measurement: s
+              mode: slider
+        pump_startup_delay:
+          name: Pumpen-Anlaufverzögerung
+          description: Wartezeit nach Pumpenstart bevor PID regelt (Zeit für Durchfluss-Aufbau)
+          default: 10
+          selector:
+            number:
+              min: 0.0
+              max: 60.0
+              step: 5.0
+              unit_of_measurement: s
+              mode: slider
+        enable_smart_start:
+          name: Intelligente Startposition aktivieren
+          description: Ventil öffnet beim Pumpenstart sofort auf geschätzte Position
+            statt langsam hochzuregeln
+          default: true
+          selector:
+            boolean: {}
+        close_valve_on_pump_stop:
+          name: Ventil bei Pumpenstopp schließen
+          description: Schließt das Ventil automatisch wenn die Pumpe stoppt (Energiesparmodus)
+          default: true
+          selector:
+            boolean: {}
+    erweitert:
+      name: Erweiterte Einstellungen
+      icon: mdi:cog-outline
+      collapsed: true
+      description: "**\U0001F39B️ Feintuning und Monitoring**\n\n**\U0001F4CA Status-Sensor
+        (Optional, empfohlen):**\n\n**Benötigt:** Text Helper\n[→ Helper erstellen](https://my.home-assistant.io/redirect/helpers/)\n\n**Konfiguration:**\n```\nName:
+        Mischkreis Status\nIcon: mdi:information-outline\nMaximale Länge: 255\n```\n\n**Zeigt
+        an:**\n• \"Regelung AUF (Fehler: 2.3°C, Ventil: 65%)\"\n• \"OK - In Totzone
+        (45.2°C ≈ 45.0°C)\"\n• \"NOTFALL: Vorlauf zu heiß (62°C)\"\n\n**\U0001F3AF
+        Totzone:**\nTemperaturbereich ohne Regelung (verhindert Pendeln)\n• Standard:
+        0.5°C\n• Bei Pendeln: 1.0°C\n\n**\U0001F4CF Spreizungs-Überwachung:**\nBegrenzt
+        Differenz Vorlauf-Rücklauf\n• Nur mit Rücklauf-Sensor nutzbar\n• 0 = deaktiviert\n\n**\U0001F4F1
+        Dashboard-Beispiel:**\n```yaml\ntype: entities\nentities:\n  - input_text.mischkreis_status\n
+        \ - sensor.vorlauftemperatur\n  - input_number.ventilposition\n  - input_number.pid_integral_speicher\n```\n"
+      input:
+        status_sensor:
+          name: Status-Sensor (Helper)
+          description: Input Text Helper für Status-Anzeige (erstelle einen Helper
+            mit diesem Namen)
+          default: []
+          selector:
+            entity:
+              domain:
+              - input_text
+              multiple: false
+              reorder: false
+        deadband:
+          name: Totzone (°C)
+          description: Temperaturbereich in dem nicht geregelt wird (verhindert Pendeln)
+          default: 0.5
+          selector:
+            number:
+              min: 0.0
+              max: 3.0
+              step: 0.1
+              unit_of_measurement: °C
+              mode: slider
+        return_temp_sensor:
+          name: Rücklauftemperatur-Sensor (Optional)
+          description: Für Spreizungs-Überwachung und Optimierung
+          default: []
+          selector:
+            entity:
+              domain:
+              - sensor
+              device_class:
+              - temperature
+              multiple: false
+              reorder: false
+        max_spread:
+          name: Maximale Spreizung (Optional)
+          description: Maximaler Unterschied Vorlauf-Rücklauf (0 = deaktiviert)
+          default: 0
+          selector:
+            number:
+              min: 0.0
+              max: 30.0
+              step: 1.0
+              unit_of_measurement: °C
+              mode: slider
+mode: single
+max_exceeded: silent
+trigger:
+- platform: time_pattern
+  seconds: /10
+  id: pid_control
+- platform: state
+  entity_id: !input target_flow_temp
+  id: setpoint_change
+- platform: state
+  entity_id: !input manual_mode
+  id: manual_mode_change
+- platform: state
+  entity_id: !input heating_circuit_pump_status
+  to: 'on'
+  id: pump_started
+- platform: state
+  entity_id: !input heating_circuit_pump_status
+  to: 'off'
+  id: pump_stopped
+variables:
+  actuator_open: !input actuator_open
+  actuator_close: !input actuator_close
+  flow_temp_sensor: !input flow_temp_sensor
+  buffer_temp_sensor: !input buffer_temp_sensor
+  heating_circuit_pump_status: !input heating_circuit_pump_status
+  manual_mode: !input manual_mode
+  pid_integral_helper: !input pid_integral_helper
+  pid_last_error_helper: !input pid_last_error_helper
+  pid_valve_position_helper: !input pid_valve_position_helper
+  status_sensor: !input status_sensor
+  target_flow_temp_entity: !input target_flow_temp
+  target_flow_temp_static: !input target_flow_temp_static
+  min_buffer_temp: !input min_buffer_temp
+  max_flow_temp: !input max_flow_temp
+  min_flow_temp: !input min_flow_temp
+  enable_heating_curve: !input enable_heating_curve
+  outside_temp_sensor: !input outside_temp_sensor
+  heating_curve_20: !input heating_curve_20
+  heating_curve_0: !input heating_curve_0
+  heating_curve_20_plus: !input heating_curve_20_plus
+  pid_kp: !input pid_kp
+  pid_ki: !input pid_ki
+  pid_kd: !input pid_kd
+  pid_integral_max: !input pid_integral_max
+  control_interval: !input control_interval
+  actuator_runtime: !input actuator_runtime
+  min_actuator_pulse: !input min_actuator_pulse
+  max_actuator_runtime: !input max_actuator_runtime
+  pump_startup_delay: !input pump_startup_delay
+  enable_smart_start: !input enable_smart_start
+  close_valve_on_pump_stop: !input close_valve_on_pump_stop
+  deadband: !input deadband
+  return_temp_sensor: !input return_temp_sensor
+  max_spread: !input max_spread
+  has_pump_status: '{{ heating_circuit_pump_status is string and heating_circuit_pump_status
+    | length > 0 }}'
+  has_manual_mode: '{{ manual_mode is string and manual_mode | length > 0 }}'
+  has_status_sensor: '{{ status_sensor is string and status_sensor | length > 0 }}'
+  has_outside_temp: '{{ outside_temp_sensor is string and outside_temp_sensor | length
+    > 0 }}'
+  has_return_temp: '{{ return_temp_sensor is string and return_temp_sensor | length
+    > 0 }}'
+  has_target_entity: '{{ target_flow_temp_entity is string and target_flow_temp_entity
+    | length > 0 }}'
+  flow_temp_valid: '{{ is_number(states(flow_temp_sensor)) }}'
+  buffer_temp_valid: '{{ is_number(states(buffer_temp_sensor)) }}'
+  last_step_seconds: "{% set s = states[pid_last_error_helper] %}{{ (now() - s.last_reported).total_seconds()
+    if s is not none else 999999 }}"
+  step_due: '{{ (last_step_seconds | float) >= (control_interval | float) - 1 }}'
+  dt_minutes: '{{ ([[last_step_seconds | float, control_interval | float] | max, (control_interval
+    | float) * 3] | min) / 60 }}'
+  current_flow_temp: '{{ states(flow_temp_sensor) | float(0) }}'
+  current_buffer_temp: '{{ states(buffer_temp_sensor) | float(0) }}'
+  current_outside_temp: '{{ states(outside_temp_sensor) | float(10) if has_outside_temp
+    else 10 }}'
+  current_return_temp: '{{ states(return_temp_sensor) | float(0) if has_return_temp
+    else 0 }}'
+  is_pump_running: '{{ (not has_pump_status) or is_state(heating_circuit_pump_status,
+    ''on'') }}'
+  pump_just_started: '{{ trigger.id is defined and trigger.id == ''pump_started''
+    }}'
+  pump_just_stopped: '{{ trigger.id is defined and trigger.id == ''pump_stopped''
+    }}'
+  target_temp_from_curve: "{% if enable_heating_curve and has_outside_temp %}\n  {%
+    set temp_out = current_outside_temp %}\n  {% if temp_out <= -20 %}\n    {{ heating_curve_20
+    }}\n  {% elif temp_out >= 20 %}\n    {{ heating_curve_20_plus }}\n  {% else %}\n
+    \   {% if temp_out < 0 %}\n      {% set slope = (heating_curve_0 - heating_curve_20)
+    / 20 %}\n      {{ heating_curve_20 + slope * (temp_out + 20) }}\n    {% else %}\n
+    \     {% set slope = (heating_curve_20_plus - heating_curve_0) / 20 %}\n      {{
+    heating_curve_0 + slope * temp_out }}\n    {% endif %}\n  {% endif %}\n{% else
+    %}\n  {{ none }}\n{% endif %}\n"
+  target_flow_temp: "{% if has_target_entity %}\n  {{ states(target_flow_temp_entity)
+    | float(target_flow_temp_static) }}\n{% elif target_temp_from_curve is not none
+    and target_temp_from_curve != 'None' %}\n  {{ target_temp_from_curve | float }}\n{%
+    else %}\n  {{ target_flow_temp_static }}\n{% endif %}\n"
+  is_manual_mode: '{{ has_manual_mode and is_state(manual_mode, ''on'') }}'
+  buffer_temp_ok: '{{ current_buffer_temp >= min_buffer_temp }}'
+  flow_temp_in_limits: '{{ current_flow_temp <= max_flow_temp and current_flow_temp
+    >= min_flow_temp }}'
+  spread_ok: '{{ max_spread == 0 or not has_return_temp or (current_flow_temp - current_return_temp)
+    <= max_spread }}'
+  should_regulate: '{{ is_pump_running and not is_manual_mode and buffer_temp_ok and
+    current_flow_temp <= max_flow_temp and current_flow_temp >= min_flow_temp }}'
+  error: '{{ (target_flow_temp | float) - current_flow_temp }}'
+  in_deadband: '{{ (error | float) | abs < deadband }}'
+  # Auf den Bereich des Helfers begrenzen, sonst bricht set_value den Lauf ab.
+  error_stored: '{{ [[error | float, state_attr(pid_last_error_helper, ''min'') | float(-50)]
+    | max, state_attr(pid_last_error_helper, ''max'') | float(50)] | min }}'
+  integral_sum: '{{ states(pid_integral_helper) | float(0) }}'
+  last_error: '{{ states(pid_last_error_helper) | float(0) }}'
+  current_valve_position: '{{ states(pid_valve_position_helper) | float(50) }}'
+  p_term: "{% if should_regulate and not in_deadband %}\n  {{ pid_kp * (error | float)
+    }}\n{% else %}\n  0\n{% endif %}\n"
+  new_integral: "{% if should_regulate and not in_deadband %}\n  {% set new_int =
+    integral_sum + ((error | float) * (dt_minutes | float)) %}\n  {% set new_int
+    = [new_int, pid_integral_max] | min %}\n  {% set new_int = [new_int, -pid_integral_max]
+    | max %}\n  {{ new_int }}\n{% else %}\n  {{ integral_sum }}\n{% endif %}\n"
+  i_term: "{% if should_regulate and not in_deadband %}\n  {{ pid_ki * (new_integral
+    | float) }}\n{% else %}\n  0\n{% endif %}\n"
+  d_term: "{% if should_regulate and not in_deadband and control_interval > 0 %}\n
+    \ {{ pid_kd * (((error | float) - last_error) / (dt_minutes | float)) }}\n{%
+    else %}\n  0\n{% endif %}\n"
+  pid_output: "{% if should_regulate and not in_deadband %}\n  {{ (p_term | float)
+    + (i_term | float) + (d_term | float) }}\n{% else %}\n  0\n{% endif %}\n"
+  actuator_time: "{% set output = pid_output | float %}\n{% if output == 0 %}\n  0\n{%
+    else %}\n  {% set time = (output | abs / 100) * actuator_runtime %}\n  {% set
+    time = [time, max_actuator_runtime] | min %}\n  {% if time >= min_actuator_pulse
+    %}\n    {{ time }}\n  {% else %}\n    0\n  {% endif %}\n{% endif %}\n"
+  new_valve_position: "{% set output = pid_output | float %}\n{% set act_time = actuator_time
+    | float %}\n{% set change_percent = (act_time / actuator_runtime) * 100 %}\n{%
+    if output > 0 %}\n  {% set new_pos = current_valve_position + change_percent %}\n{%
+    elif output < 0 %}\n  {% set new_pos = current_valve_position - change_percent
+    %}\n{% else %}\n  {% set new_pos = current_valve_position %}\n{% endif %}\n{%
+    set new_pos = [new_pos, 100] | min %}\n{% set new_pos = [new_pos, 0] | max %}\n{{
+    new_pos }}\n"
+  should_open: '{{ (pid_output | float) > 0 and (actuator_time | float) > 0 }}'
+  should_close: '{{ (pid_output | float) < 0 and (actuator_time | float) > 0 }}'
+  status_text: "{% if is_manual_mode %}\n  Manueller Modus\n{% elif not is_pump_running
+    %}\n  Pumpe AUS - Keine Regelung\n{% elif not buffer_temp_ok %}\n  Puffer zu kalt
+    ({{ current_buffer_temp | round(1) }}°C < {{ min_buffer_temp }}°C)\n{% elif current_flow_temp
+    > max_flow_temp %}\n  NOTFALL: Vorlauf zu heiß ({{ current_flow_temp | round(1)
+    }}°C)\n{% elif current_flow_temp < min_flow_temp %}\n  NOTFALL: Frostschutz ({{
+    current_flow_temp | round(1) }}°C)\n{% elif in_deadband %}\n  OK - In Totzone
+    ({{ current_flow_temp | round(1) }}°C ≈ {{ (target_flow_temp | float) | round(1)
+    }}°C, Ventil: {{ current_valve_position | round(0) }}%)\n{% elif should_open %}\n
+    \ Regelung AUF (Fehler: {{ (error | float) | round(1) }}°C, P:{{ (p_term | float)
+    | round(1) }} I:{{ (i_term | float) | round(1) }} D:{{ (d_term | float) | round(1)
+    }}, Ventil: {{ (new_valve_position | float) | round(0) }}%)\n{% elif should_close
+    %}\n  Regelung ZU (Fehler: {{ (error | float) | round(1) }}°C, P:{{ (p_term |
+    float) | round(1) }} I:{{ (i_term | float) | round(1) }} D:{{ (d_term | float)
+    | round(1) }}, Ventil: {{ (new_valve_position | float) | round(0) }}%)\n{% else
+    %}\n  Bereit (Vorlauf: {{ current_flow_temp | round(1) }}°C, Soll: {{ (target_flow_temp
+    | float) | round(1) }}°C, Ventil: {{ current_valve_position | round(0) }}%)\n{%
+    endif %}\n"
+  smart_start_position: "{% if enable_smart_start and pump_just_started %}\n  {% set
+    temp_diff = (target_flow_temp | float) - current_buffer_temp %}\n  {% if temp_diff
+    <= 0 %}\n    20\n  {% elif temp_diff >= 20 %}\n    80\n  {% else %}\n    {{ 20
+    + (temp_diff / 20 * 60) }}\n  {% endif %}\n{% else %}\n  0\n{% endif %}\n"
+  smart_start_time: "{% if (smart_start_position | float) > 0 %}\n  {{ ((smart_start_position
+    | float) / 100 * actuator_runtime) | int }}\n{% else %}\n  0\n{% endif %}\n"
+action:
+# Verriegelung: beide Richtungen aus, bevor irgendetwas anderes passiert.
+- if:
+  - condition: template
+    value_template: '{{ not is_state(actuator_open, ''off'') or not is_state(actuator_close,
+      ''off'') }}'
+  then:
+  - service: homeassistant.turn_off
+    target:
+      entity_id: '{{ actuator_open }}'
+  - service: homeassistant.turn_off
+    target:
+      entity_id: '{{ actuator_close }}'
+- if:
+  - condition: template
+    # Zustandsbasiert statt nur über das Ereignis: bei mode single geht ein
+    # Pumpenstopp während eines Stellvorgangs sonst verloren.
+    value_template: '{{ close_valve_on_pump_stop and not is_pump_running and (pump_just_stopped
+      or current_valve_position > 0) }}'
+  then:
+  - service: homeassistant.turn_off
+    target:
+      entity_id: '{{ actuator_open }}'
+  - delay:
+      milliseconds: 500
+  - service: homeassistant.turn_on
+    target:
+      entity_id: '{{ actuator_close }}'
+  - delay:
+      seconds: '{{ actuator_runtime | int }}'
+  - service: homeassistant.turn_off
+    target:
+      entity_id: '{{ actuator_close }}'
+  - service: input_number.set_value
+    target:
+      entity_id: '{{ pid_valve_position_helper }}'
+    data:
+      value: 0
+  - service: input_number.set_value
+    target:
+      entity_id: '{{ pid_integral_helper }}'
+    data:
+      value: 0
+  - service: input_number.set_value
+    target:
+      entity_id: '{{ pid_last_error_helper }}'
+    data:
+      value: 0
+  - if:
+    - condition: template
+      value_template: '{{ has_status_sensor }}'
+    then:
+    - service: input_text.set_value
+      target:
+        entity_id: '{{ status_sensor }}'
+      data:
+        value: Pumpe gestoppt - Ventil geschlossen, PID zurückgesetzt
+  - stop: Ventil geschlossen - Pumpe gestoppt
+- if:
+  - condition: template
+    value_template: '{{ not flow_temp_valid }}'
+  then:
+  - if:
+    - condition: template
+      value_template: '{{ has_status_sensor }}'
+    then:
+    - service: input_text.set_value
+      target:
+        entity_id: '{{ status_sensor }}'
+      data:
+        value: 'FEHLER: Vorlauffühler ohne Wert ({{ states(flow_temp_sensor) }}) - Ventil
+          schließt'
+  - if:
+    - condition: template
+      value_template: '{{ current_valve_position > 0 }}'
+    then:
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_open }}'
+    - delay:
+        milliseconds: 500
+    - service: homeassistant.turn_on
+      target:
+        entity_id: '{{ actuator_close }}'
+    - delay:
+        seconds: '{{ [30, (actuator_runtime * 0.25) | int] | max }}'
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_close }}'
+    - service: input_number.set_value
+      target:
+        entity_id: '{{ pid_valve_position_helper }}'
+      data:
+        value: '{{ [current_valve_position - 25, 0] | max }}'
+  - service: input_number.set_value
+    target:
+      entity_id: '{{ pid_integral_helper }}'
+    data:
+      value: 0
+  - stop: Vorlauffühler ohne gültigen Wert - Ventil schließt
+- if:
+  - condition: template
+    value_template: '{{ pump_just_started and enable_smart_start and flow_temp_valid
+      and buffer_temp_valid and (smart_start_time | int) > 0 }}'
+  then:
+  - service: homeassistant.turn_off
+    target:
+      entity_id: '{{ actuator_close }}'
+  - delay:
+      milliseconds: 500
+  - service: homeassistant.turn_on
+    target:
+      entity_id: '{{ actuator_open }}'
+  - delay:
+      seconds: '{{ smart_start_time | int }}'
+  - service: homeassistant.turn_off
+    target:
+      entity_id: '{{ actuator_open }}'
+  - delay:
+      seconds: '{{ pump_startup_delay | int }}'
+  - service: input_number.set_value
+    target:
+      entity_id: '{{ pid_integral_helper }}'
+    data:
+      value: 0
+  - service: input_number.set_value
+    target:
+      entity_id: '{{ pid_valve_position_helper }}'
+    data:
+      value: '{{ smart_start_position | float }}'
+  - if:
+    - condition: template
+      value_template: '{{ has_status_sensor }}'
+    then:
+    - service: input_text.set_value
+      target:
+        entity_id: '{{ status_sensor }}'
+      data:
+        value: 'Smart Start: Ventil auf {{ (smart_start_position | float) | round(0)
+          }}% geöffnet'
+  - stop: Smart Start ausgeführt - warte auf nächsten Regelzyklus
+- choose:
+  - conditions:
+    - condition: template
+      value_template: '{{ current_flow_temp > max_flow_temp }}'
+    sequence:
+    - if:
+      - condition: template
+        value_template: '{{ has_status_sensor }}'
+      then:
+      - service: input_text.set_value
+        target:
+          entity_id: '{{ status_sensor }}'
+        data:
+          value: 'NOTFALL: Vorlauf zu heiß ({{ current_flow_temp | round(1) }}°C)
+            - Ventil schließt!'
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_open }}'
+    - delay:
+        milliseconds: 500
+    - service: homeassistant.turn_on
+      target:
+        entity_id: '{{ actuator_close }}'
+    - delay:
+        seconds: '{{ [30, (actuator_runtime * 0.25) | int] | max }}'
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_close }}'
+    - service: input_number.set_value
+      target:
+        entity_id: '{{ pid_valve_position_helper }}'
+      data:
+        value: '{{ [current_valve_position - 25, 0] | max }}'
+    - stop: Notabschaltung - Vorlauf zu heiß
+  - conditions:
+    - condition: template
+      value_template: '{{ current_flow_temp < min_flow_temp and is_pump_running }}'
+    sequence:
+    - if:
+      - condition: template
+        value_template: '{{ has_status_sensor }}'
+      then:
+      - service: input_text.set_value
+        target:
+          entity_id: '{{ status_sensor }}'
+        data:
+          value: 'NOTFALL: Frostschutz aktiv ({{ current_flow_temp | round(1) }}°C)
+            - Ventil öffnet!'
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_close }}'
+    - delay:
+        milliseconds: 500
+    - service: homeassistant.turn_on
+      target:
+        entity_id: '{{ actuator_open }}'
+    - delay:
+        seconds: '{{ [30, (actuator_runtime * 0.25) | int] | max }}'
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_open }}'
+    - service: input_number.set_value
+      target:
+        entity_id: '{{ pid_valve_position_helper }}'
+      data:
+        value: '{{ [current_valve_position + 25, 100] | min }}'
+    - stop: Notabschaltung - Frostschutz aktiviert
+  - conditions:
+    - condition: template
+      value_template: '{{ is_manual_mode }}'
+    sequence:
+    - if:
+      - condition: template
+        value_template: '{{ has_status_sensor }}'
+      then:
+      - service: input_text.set_value
+        target:
+          entity_id: '{{ status_sensor }}'
+        data:
+          value: Manueller Modus aktiv - PID deaktiviert
+    - stop: Manueller Modus aktiv - PID deaktiviert
+  - conditions:
+    - condition: template
+      value_template: '{{ not is_pump_running }}'
+    sequence:
+    - if:
+      - condition: template
+        value_template: '{{ has_status_sensor }}'
+      then:
+      - service: input_text.set_value
+        target:
+          entity_id: '{{ status_sensor }}'
+        data:
+          value: 'Pumpe AUS - Keine Regelung (Vorlauf: {{ current_flow_temp | round(1)
+            }}°C, Puffer: {{ current_buffer_temp | round(1) }}°C)'
+    - stop: Pumpe läuft nicht - keine Regelung nötig
+  - conditions:
+    - condition: template
+      value_template: '{{ not buffer_temp_ok }}'
+    sequence:
+    - if:
+      - condition: template
+        value_template: '{{ has_status_sensor }}'
+      then:
+      - service: input_text.set_value
+        target:
+          entity_id: '{{ status_sensor }}'
+        data:
+          value: Puffer zu kalt ({{ current_buffer_temp | round(1) }}°C < {{ min_buffer_temp
+            }}°C) - Ventil schließt
+    - condition: template
+      value_template: '{{ step_due }}'
+    - service: input_number.set_value
+      target:
+        entity_id: '{{ pid_last_error_helper }}'
+      data:
+        value: '{{ error_stored }}'
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_open }}'
+    - delay:
+        milliseconds: 500
+    - service: homeassistant.turn_on
+      target:
+        entity_id: '{{ actuator_close }}'
+    - delay:
+        seconds: 5
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_close }}'
+    - service: input_number.set_value
+      target:
+        entity_id: '{{ pid_integral_helper }}'
+      data:
+        value: 0
+    - stop: Puffer zu kalt
+  - conditions:
+    - condition: template
+      value_template: '{{ has_return_temp and max_spread > 0 and not spread_ok }}'
+    sequence:
+    - if:
+      - condition: template
+        value_template: '{{ has_status_sensor }}'
+      then:
+      - service: input_text.set_value
+        target:
+          entity_id: '{{ status_sensor }}'
+        data:
+          value: Spreizung zu groß ({{ (current_flow_temp - current_return_temp) |
+            round(1) }}°C > {{ max_spread }}°C) - Ventil schließt
+    - condition: template
+      value_template: '{{ step_due }}'
+    - service: input_number.set_value
+      target:
+        entity_id: '{{ pid_last_error_helper }}'
+      data:
+        value: '{{ error_stored }}'
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_open }}'
+    - delay:
+        milliseconds: 500
+    - service: homeassistant.turn_on
+      target:
+        entity_id: '{{ actuator_close }}'
+    - delay:
+        seconds: 5
+    - service: homeassistant.turn_off
+      target:
+        entity_id: '{{ actuator_close }}'
+    - stop: Spreizung zu groß
+  default:
+  - condition: template
+    value_template: '{{ step_due }}'
+  - service: input_number.set_value
+    target:
+      entity_id: '{{ pid_integral_helper }}'
+    data:
+      value: '{{ new_integral | float }}'
+  - service: input_number.set_value
+    target:
+      entity_id: '{{ pid_last_error_helper }}'
+    data:
+      value: '{{ error_stored }}'
+  - service: input_number.set_value
+    target:
+      entity_id: '{{ pid_valve_position_helper }}'
+    data:
+      value: '{{ new_valve_position | float }}'
+  - if:
+    - condition: template
+      value_template: '{{ has_status_sensor }}'
+    then:
+    - service: input_text.set_value
+      target:
+        entity_id: '{{ status_sensor }}'
+      data:
+        value: '{{ status_text }}'
+  - choose:
+    - conditions:
+      - condition: template
+        value_template: '{{ should_open }}'
+      sequence:
+      - service: homeassistant.turn_off
+        target:
+          entity_id: '{{ actuator_close }}'
+      - delay:
+          milliseconds: 500
+      - service: homeassistant.turn_on
+        target:
+          entity_id: '{{ actuator_open }}'
+      - delay:
+          seconds: '{{ actuator_time | int }}'
+      - service: homeassistant.turn_off
+        target:
+          entity_id: '{{ actuator_open }}'
+    - conditions:
+      - condition: template
+        value_template: '{{ should_close }}'
+      sequence:
+      - service: homeassistant.turn_off
+        target:
+          entity_id: '{{ actuator_open }}'
+      - delay:
+          milliseconds: 500
+      - service: homeassistant.turn_on
+        target:
+          entity_id: '{{ actuator_close }}'
+      - delay:
+          seconds: '{{ actuator_time | int }}'
+      - service: homeassistant.turn_off
+        target:
+          entity_id: '{{ actuator_close }}'

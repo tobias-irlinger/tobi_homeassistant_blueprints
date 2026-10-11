@@ -1,0 +1,417 @@
+blueprint:
+  name: Pufferspeicher-Pumpensteuerung mit Ventilschutz v12.2
+  description: 'Steuert die Pufferspeicher-Umwälzpumpe basierend auf Thermostat-Status
+    und optionaler Pufferspeicher-Temperatur.
+
+
+    **Version:** 12.2 | **Funktionen:** Hysterese, Wiedereinschaltverzögerung, Ventilschutz,
+    Status-Monitoring
+
+
+    **Änderungen v12.2:**
+
+    - FIX: Pufferspeicher-Prüfung wirkt jetzt (wurde bisher immer als "warm genug"
+    gewertet)
+
+    - FIX: Wiedereinschaltverzögerung wirkt jetzt; ein gesperrter Start wird nach
+    Ablauf nachgeholt
+
+    - FIX: Ohne Status-Helfer bricht der Ablauf nicht mehr ab
+
+    - FIX: Nach dem Ventilschutz läuft die Pumpe weiter, wenn geheizt wird
+
+    - FIX: Pumpe startet, sobald der Puffer wieder warm genug ist
+
+    - FIX: Status "Ventilschutz läuft" wird angezeigt
+
+    '
+  source_url: https://github.com/tobias-irlinger/tobi_homeassistant_blueprints/blob/main/blueprints/automation/pumpensteuerung.yaml
+  domain: automation
+  author: Tobias
+  homeassistant:
+    min_version: 2024.6.0
+  input:
+    grundeinstellungen:
+      name: Grundeinstellungen
+      icon: mdi:cog
+      collapsed: false
+      description: "**\U0001F3AF Basis-Konfiguration der Pumpensteuerung**\n\nDie
+        Pumpe läuft wenn:\n• Mindestens 1 Thermostat heizt UND\n• Pufferspeicher warm
+        genug ist (falls konfiguriert) UND\n• Manual Override AUS ist\n\n**\U0001F517
+        Zusammenspiel mit PID-Mischkreis:**\nDiese Blueprint steuert nur die **Pumpe**.
+        Die PID-Blueprint regelt das **Mischventil**.\n"
+      input:
+        thermostats:
+          name: Thermostate
+          description: Wähle die zu überwachenden Thermostate aus
+          selector:
+            entity:
+              domain:
+              - climate
+              multiple: true
+              reorder: false
+        actor:
+          name: Pufferspeicher-Pumpe
+          description: Die zu steuernde Umwälzpumpe
+          selector:
+            target:
+              entity:
+              - domain:
+                - switch
+                - light
+                - fan
+                - input_boolean
+        manual_disable:
+          name: Manual Override
+          description: 'Schalter zum manuellen Deaktivieren der Automatik.
+
+
+            **Benötigt:** Input Boolean
+
+            [→ Helper erstellen](https://my.home-assistant.io/redirect/helpers/)
+
+
+            **AN:** Automatik gesperrt (außer Ventilschutz)
+
+            **AUS:** Normale Automatik
+
+            '
+          selector:
+            entity:
+              domain:
+              - input_boolean
+              multiple: false
+              reorder: false
+    pufferspeicher_einstellungen:
+      name: Pufferspeicher-Einstellungen
+      icon: mdi:water-boiler
+      collapsed: true
+      description: "**\U0001F321️ Optional: Pufferspeicher-Temperatur überwachen**\n\nPumpe
+        startet nur wenn Puffer warm genug ist. Verhindert kalte Luft bei leerem Puffer.\n\n**\U0001F4A1
+        Tipp:** Temperaturfühler im oberen Bereich des Puffers anbringen (wärmste
+        Stelle).\n"
+      input:
+        buffer_temp_sensor:
+          name: Pufferspeicher Temperaturfühler (Optional)
+          description: Temperatursensor im Pufferspeicher - leer lassen wenn nicht
+            verwendet
+          default: []
+          selector:
+            entity:
+              domain:
+              - sensor
+              device_class:
+              - temperature
+              multiple: false
+              reorder: false
+        min_buffer_temp:
+          name: Minimale Pufferspeicher-Temperatur (°C)
+          description: Pumpe startet nur wenn Pufferspeicher diese Temperatur erreicht
+            hat (nur aktiv wenn Temperaturfühler ausgewählt)
+          default: 40
+          selector:
+            number:
+              min: 20.0
+              max: 80.0
+              step: 1.0
+              unit_of_measurement: °C
+              mode: slider
+    ventilschutz_einstellungen:
+      name: Ventilschutz
+      icon: mdi:pipe-valve
+      collapsed: true
+      description: "**\U0001F6E1️ Verhindert Ventil-Verkalkung durch regelmäßige Bewegung**\n\n•
+        Läuft **unabhängig** von allen anderen Einstellungen\n• Auch bei Manual Override
+        oder ausgeschalteter Heizung\n• Empfohlen: 1x pro Woche, 5 Minuten\n\n**⚙️
+        Funktionsweise:** Pumpe läuft für die eingestellte Dauer, dann automatisch
+        wieder AUS.\n"
+      input:
+        valve_protection_day:
+          name: Ventilschutz Tag
+          description: 'Wochentag für den automatischen Ventilschutz.
+
+
+            **Empfohlen:** Einmal pro Woche
+
+            **Standard:** Montag
+
+            '
+          default: Mon
+          selector:
+            select:
+              options:
+              - label: Montag
+                value: Mon
+              - label: Dienstag
+                value: Tue
+              - label: Mittwoch
+                value: Wed
+              - label: Donnerstag
+                value: Thu
+              - label: Freitag
+                value: Fri
+              - label: Samstag
+                value: Sat
+              - label: Sonntag
+                value: Sun
+              sort: false
+              multiple: false
+              custom_value: false
+        valve_protection_time:
+          name: Ventilschutz Uhrzeit
+          description: 'Uhrzeit für den Ventilschutz.
+
+
+            **Empfohlen:** Früh morgens (wenig Heizbedarf)
+
+            **Standard:** 04:00 Uhr
+
+            '
+          default: 04:00:00
+          selector:
+            time: {}
+        valve_protection_duration:
+          name: Ventilschutz Dauer (Minuten)
+          description: 'Wie lange soll die Pumpe beim Ventilschutz laufen?
+
+
+            **Standard:** 5 Minuten
+
+            **Zweck:** Ventil bewegen, Verkalkung verhindern
+
+            '
+          default: 5
+          selector:
+            number:
+              min: 1.0
+              max: 60.0
+              unit_of_measurement: min
+              step: 1.0
+              mode: slider
+    hysterese_einstellungen:
+      name: Hysterese & Schaltverzögerung
+      icon: mdi:timer-sand
+      collapsed: true
+      description: "**⏱️ Verhindert häufiges Ein/Ausschalten und schont die Pumpe**\n\n**Hysterese:**
+        Wartezeit bevor Pumpe ausschaltet wenn kein Thermostat mehr heizt\n• Fußbodenheizung:
+        10-15 Min (träges System)\n• Heizkörper: 3-5 Min (schnelleres System)\n\n**Wiedereinschaltverzögerung:**
+        Minimale Pause zwischen Aus→Ein\n• Kleine Anlagen: 2-3 Min\n• Mittlere Anlagen:
+        3-5 Min  \n• Große Anlagen: 5-10 Min\n\n**\U0001F4CA Status-Sensor (Optional,
+        empfohlen):**\n\n**Benötigt:** Text Helper\n[→ Helper erstellen](https://my.home-assistant.io/redirect/helpers/)\n\n**Konfiguration:**\n```\nName:
+        Pumpensteuerung Status\nIcon: mdi:information-outline\nMaximale Länge: 255\n```\n\n**Zeigt
+        an:**\n• \"Pumpe läuft - 2 Thermostat(e) heizen\"\n• \"Puffer zu kalt (35°C
+        < 40°C)\"\n• \"Ventilschutz aktiv\"\n"
+      input:
+        status_sensor:
+          name: Status-Sensor (Helper)
+          description: 'Live-Status der Pumpensteuerung anzeigen.
+
+
+            **Benötigt:** Text Helper
+
+            [→ Helper erstellen](https://my.home-assistant.io/redirect/helpers/)
+
+
+            **Konfiguration:**
+
+            ```
+
+            Name: Pumpensteuerung Status
+
+            Icon: mdi:information-outline
+
+            Maximale Länge: 255
+
+            ```
+
+
+            **Zeigt an:**
+
+            • "Pumpe läuft - 2 Thermostat(e) heizen"
+
+            • "Pumpe AUS - Kein Heizbedarf"
+
+            • "Puffer zu kalt (35°C < 40°C)"
+
+            • "Ventilschutz läuft (5 Min)"
+
+            • "Manual Override AKTIV"
+
+            '
+          default: {}
+          selector:
+            entity:
+              domain:
+              - input_text
+              multiple: false
+              reorder: false
+        hysteresis_delay:
+          name: Hysterese Verzögerung (Minuten)
+          description: 'Verzögerung bevor Pumpe ausschaltet wenn kein Thermostat mehr
+            heizt.
+
+
+            **Zweck:** Verhindert häufiges Schalten
+
+
+            **Empfohlen:**
+
+            • Fußbodenheizung: 10-15 Min
+
+            • Heizkörper: 3-5 Min
+
+            • Ohne: 0 Min
+
+            '
+          default: 5
+          selector:
+            number:
+              min: 0.0
+              max: 30.0
+              step: 1.0
+              unit_of_measurement: min
+              mode: slider
+        restart_delay:
+          name: Wiedereinschaltverzögerung (Minuten)
+          description: 'Minimale Wartezeit nach Ausschalten bevor Pumpe wieder einschalten
+            kann.
+
+
+            **Zweck:** Schont Pumpe, verhindert Flattern
+
+
+            **Empfohlen:**
+
+            • Kleine Anlagen: 2-3 Min
+
+            • Mittlere Anlagen: 3-5 Min
+
+            • Große Anlagen: 5-10 Min
+
+            '
+          default: 3
+          selector:
+            number:
+              min: 0.0
+              max: 15.0
+              step: 1.0
+              unit_of_measurement: min
+              mode: slider
+mode: restart
+trigger:
+- platform: state
+  entity_id: !input thermostats
+  attribute: hvac_action
+- platform: state
+  entity_id: !input manual_disable
+  to: 'on'
+  id: manual_override_on
+- platform: state
+  entity_id: !input manual_disable
+  to: 'off'
+  id: manual_override_off
+- platform: time
+  at: !input valve_protection_time
+  id: valve_protection
+- platform: numeric_state
+  entity_id: !input buffer_temp_sensor
+  above: !input min_buffer_temp
+  id: buffer_warm
+variables:
+  thermostats: !input thermostats
+  manual_disable: !input manual_disable
+  status_sensor: !input status_sensor
+  valve_protection_day: !input valve_protection_day
+  valve_protection_time: !input valve_protection_time
+  valve_protection_duration: !input valve_protection_duration
+  hysteresis_delay: !input hysteresis_delay
+  restart_delay: !input restart_delay
+  actor_entity: !input actor
+  buffer_temp_sensor: !input buffer_temp_sensor
+  min_buffer_temp: !input min_buffer_temp
+  is_valve_protection_day: '{{ now().strftime(''%a'') == valve_protection_day }}'
+  is_valve_protection_trigger: '{{ trigger.id == ''valve_protection'' }}'
+  has_buffer_sensor: '{{ buffer_temp_sensor is string and buffer_temp_sensor | length
+    > 0 }}'
+  has_status_sensor: '{{ status_sensor is string and status_sensor | length > 0 }}'
+  any_heating: '{{ expand(thermostats) | selectattr(''attributes.hvac_action'', ''eq'',
+    ''heating'') | list | count > 0 }}'
+  buffer_temp_ok: '{{ not has_buffer_sensor or states(buffer_temp_sensor) | float(0)
+    >= min_buffer_temp }}'
+  # Restliche Wartezeit der Wiedereinschaltverzögerung in Sekunden (0 = sofort).
+  restart_wait: "{% set ids = actor_entity.entity_id | default([]) %}{% set ids = [ids]
+    if ids is string else ids | list %}{% set s = states[ids[0]] if ids | count > 0
+    else none %}{% if s is none or s.state == 'on' %}0{% else %}{{ [0, restart_delay
+    * 60 - (now() - s.last_changed).total_seconds()] | max | int }}{% endif %}"
+  status_text: "{% set heating_count = expand(thermostats) | selectattr('attributes.hvac_action',
+    'eq', 'heating') | list | count %}\n{% set trigger_id = trigger.id if trigger.id
+    is defined else 'none' %}\n{% set is_ventilschutz = trigger_id == 'valve_protection'
+    and is_valve_protection_day %}\n{% set manual_on = is_state(manual_disable, 'on') %}\n{% set buffer_cold = not buffer_temp_ok %}\n\n{% if is_ventilschutz %}\n  Ventilschutz
+    läuft ({{ valve_protection_duration }} Min)\n{% elif manual_on %}\n  Manual Override
+    AKTIV - Keine Automatik\n{% elif buffer_cold %}\n  Puffer zu kalt ({{ states(buffer_temp_sensor)
+    | float(0) | round(1) }}°C < {{ min_buffer_temp }}°C)\n{% elif heating_count >
+    0 %}\n  Pumpe läuft - {{ heating_count }} Thermostat(e) heizen\n{% else %}\n  Pumpe
+    AUS - Kein Heizbedarf\n{% endif %}\n"
+action:
+- choose:
+  - conditions:
+    - condition: template
+      value_template: '{{ has_status_sensor }}'
+    sequence:
+    - service: input_text.set_value
+      target:
+        entity_id: '{{ status_sensor }}'
+      data:
+        value: '{{ status_text }}'
+- choose:
+  - conditions:
+    - condition: template
+      value_template: '{{ is_valve_protection_day and is_valve_protection_trigger
+        }}'
+    sequence:
+    - service: homeassistant.turn_on
+      target: !input actor
+    - delay:
+        minutes: '{{ valve_protection_duration }}'
+    # Danach nur ausschalten, wenn die Pumpe nicht ohnehin laufen soll.
+    - if:
+      - condition: template
+        value_template: "{{ is_state(manual_disable, 'on') or (expand(thermostats)
+          | selectattr('attributes.hvac_action', 'eq', 'heating') | list | count ==
+          0) or (has_buffer_sensor and states(buffer_temp_sensor) | float(0) < min_buffer_temp)
+          }}"
+      then:
+      - service: homeassistant.turn_off
+        target: !input actor
+  - conditions:
+    - condition: state
+      entity_id: !input manual_disable
+      state: 'on'
+    sequence:
+    - service: homeassistant.turn_off
+      target: !input actor
+    - stop: Manual Override aktiv
+  - conditions:
+    - condition: state
+      entity_id: !input manual_disable
+      state: 'off'
+    - condition: template
+      value_template: '{{ any_heating }}'
+    - condition: template
+      value_template: '{{ buffer_temp_ok }}'
+    sequence:
+    - delay:
+        seconds: '{{ restart_wait }}'
+    - service: homeassistant.turn_on
+      target: !input actor
+  default:
+  - condition: state
+    entity_id: !input manual_disable
+    state: 'off'
+  - delay:
+      minutes: '{{ hysteresis_delay }}'
+  - condition: template
+    value_template: '{{ expand(thermostats) | selectattr(''attributes.hvac_action'',
+      ''eq'', ''heating'') | list | count == 0 }}'
+  - service: homeassistant.turn_off
+    target: !input actor

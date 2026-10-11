@@ -1,0 +1,227 @@
+# =====================================================================
+#  Sensor-Wächter (veraltete Werte)
+#  Version: 1.1.1
+#  Stand:   2026-10-11
+# ---------------------------------------------------------------------
+#  Änderungshistorie
+#  1.1.1  2026-10-11  Mindestversion auf 2024.10 angehoben: die
+#                     Schreibweise triggers/conditions/actions und
+#                     "trigger:" gibt es erst ab dieser Version.
+#  1.1.0  2026-10-11  Auswahl auf Geräte umgestellt: ein Eintrag je
+#                     Gerät statt je Entität. Entitätsauswahl auf
+#                     sensor/binary_sensor eingeschränkt und als
+#                     Ergänzung für Entitäten ohne Gerät beibehalten.
+#  1.0.0  2026-10-11  Erstfassung: Prüfung über last_reported,
+#                     Prüfintervall als Auswahlliste, Ruhezeit nach
+#                     Meldung, frei konfigurierbare Benachrichtigung.
+# =====================================================================
+
+blueprint:
+  name: Sensor-Wächter (veraltete Werte) v1.1.1
+  description: >
+    **Version 1.1.1** — Stand 2026-10-11
+
+
+    Überwacht Geräte darauf, ob sie noch Daten liefern.
+
+    Anders als eine Prüfung auf "unavailable" erkennt dieser Wächter auch
+    den unangenehmeren Fall: Ein Gerät zeigt weiterhin einen plausiblen
+    Wert an, meldet aber in Wirklichkeit seit Stunden nichts mehr.
+
+    Grundlage ist `last_reported` — das aktualisiert sich bei jeder
+    Meldung, auch wenn der Wert unverändert bleibt. Ein Sensor in einem
+    Raum mit konstanter Temperatur löst also keinen Fehlalarm aus.
+
+    Ein Gerät gilt als stumm, wenn **keine** seiner Entitäten innerhalb
+    des Maximalalters gemeldet hat. Es erscheint in der Meldung genau
+    einmal, auch wenn es Temperatur, Feuchte und Batterie liefert.
+
+    Benötigt Home Assistant 2024.10 oder neuer.
+  domain: automation
+  author: Tobias
+  source_url: https://github.com/tobias-irlinger/tobi_homeassistant_blueprints/blob/main/blueprints/automation/sensor_watchdog.yaml
+  homeassistant:
+    min_version: "2024.10.0"
+  input:
+    watched_devices:
+      name: Zu überwachende Geräte
+      description: >
+        Die Auswahl ist auf Geräte mit Sensor-Entitäten beschränkt.
+        Jedes Gerät wird als Ganzes geprüft und in der Meldung einmal
+        aufgeführt.
+      default: []
+      selector:
+        device:
+          multiple: true
+          entity:
+            - domain:
+                - sensor
+                - binary_sensor
+
+    watched_entities:
+      name: Zusätzliche Entitäten
+      description: >
+        Nur für Sensoren ohne eigenes Gerät — etwa Template-Sensoren
+        oder Werte aus Integrationen, die keine Geräte anlegen.
+        Gehört eine Entität zu einem oben gewählten Gerät, wird sie
+        nicht doppelt gemeldet.
+      default: []
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain:
+                - sensor
+                - binary_sensor
+
+    max_age:
+      name: Maximales Alter
+      description: >
+        Ab wann ein Gerät als stumm gilt. Faustregel: mindestens das
+        Dreifache des längsten erwarteten Sendeintervalls.
+      default:
+        hours: 6
+        minutes: 0
+        seconds: 0
+      selector:
+        duration:
+
+    check_interval:
+      name: Prüfintervall
+      description: Wie oft geprüft wird.
+      default: "/30"
+      selector:
+        select:
+          options:
+            - label: alle 5 Minuten
+              value: "/5"
+            - label: alle 10 Minuten
+              value: "/10"
+            - label: alle 15 Minuten
+              value: "/15"
+            - label: alle 30 Minuten
+              value: "/30"
+            - label: stündlich
+              value: "0"
+
+    quiet_after_notify:
+      name: Ruhezeit nach einer Meldung
+      description: >
+        Nach einer Benachrichtigung wird für diese Dauer nicht erneut
+        gemeldet. Ohne das meldet die Automation bei jedem Prüflauf
+        erneut, solange ein Gerät stumm bleibt.
+      default:
+        hours: 12
+        minutes: 0
+        seconds: 0
+      selector:
+        duration:
+
+    notify_action:
+      name: Benachrichtigung
+      description: >
+        Was passieren soll. Zur Verfügung stehen die Variablen
+        `stale_list` (eine Zeile je betroffenem Gerät) und
+        `stale_count` (Anzahl).
+      default:
+        - action: persistent_notification.create
+          data:
+            title: Geräte melden nicht mehr
+            message: "{{ stale_list }}"
+      selector:
+        action:
+
+mode: single
+max_exceeded: silent
+
+variables:
+  devices: !input watched_devices
+  extra_entities: !input watched_entities
+  max_age: !input max_age
+  quiet: !input quiet_after_notify
+
+  max_seconds: >
+    {{ (max_age.hours | default(0) | int) * 3600
+     + (max_age.minutes | default(0) | int) * 60
+     + (max_age.seconds | default(0) | int) }}
+
+  quiet_seconds: >
+    {{ (quiet.hours | default(0) | int) * 3600
+     + (quiet.minutes | default(0) | int) * 60
+     + (quiet.seconds | default(0) | int) }}
+
+  # Alle infrage kommenden Entitäten: die der gewählten Geräte plus die
+  # einzeln ergänzten. Doppelte fallen durch unique() heraus.
+  candidates: >
+    {% set ns = namespace(l=[]) %}
+    {% for d in devices %}
+      {% set ns.l = ns.l + (device_entities(d) | list) %}
+    {% endfor %}
+    {% set ns.l = ns.l + (extra_entities | list) %}
+    {{ ns.l
+       | select('match', '^(sensor|binary_sensor)\\.')
+       | unique | list }}
+
+  # Gruppierung: Geräte-ID als Schlüssel, Entitäten ohne Gerät bilden
+  # ihre eigene Gruppe. So erscheint jedes Gerät genau einmal.
+  stale: >
+    {% set ns = namespace(keys=[], out=[]) %}
+    {% for e in candidates %}
+      {% set k = device_id(e) or e %}
+      {% if k not in ns.keys %}
+        {% set ns.keys = ns.keys + [k] %}
+      {% endif %}
+    {% endfor %}
+
+    {% for k in ns.keys %}
+      {% set grp = namespace(ages=[]) %}
+      {% for e in candidates if (device_id(e) or e) == k %}
+        {% if states[e] is not none %}
+          {% set grp.ages = grp.ages
+               + [(now() - states[e].last_reported).total_seconds()] %}
+        {% endif %}
+      {% endfor %}
+
+      {% if grp.ages | count > 0 %}
+        {# Jüngste Meldung des Geräts zählt. #}
+        {% set newest = grp.ages | min %}
+        {% if newest > (max_seconds | int) %}
+          {% set label = device_attr(k, 'name_by_user')
+                         or device_attr(k, 'name')
+                         or (states[k].name if states[k] is not none else k) %}
+          {% set hrs = (newest / 3600) | round(1) %}
+          {% set ns.out = ns.out + ['• ' ~ label ~ ' — seit ' ~ hrs ~ ' h stumm'] %}
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    {{ ns.out }}
+
+  stale_count: "{{ stale | count }}"
+  stale_list: "{{ stale | join('\n') }}"
+
+triggers:
+  - trigger: time_pattern
+    minutes: !input check_interval
+
+conditions:
+  # Nach einem Neustart sind alle Zeitstempel frisch — erst nach einer
+  # Aufwärmphase prüfen, sonst gibt es falsche Entwarnung oder Alarme.
+  - condition: template
+    value_template: >
+      {{ (now() - as_local(as_datetime(
+           states('sensor.uptime') | default(now().isoformat(), true)
+         ))).total_seconds() > 900
+         if states('sensor.uptime') not in ['unknown', 'unavailable']
+         else true }}
+
+  - condition: template
+    value_template: "{{ stale | count > 0 }}"
+
+  # Ruhezeit: nicht erneut melden, solange die Sperre läuft.
+  - condition: template
+    value_template: >
+      {{ this.attributes.last_triggered is none
+         or (now() - this.attributes.last_triggered).total_seconds()
+            > (quiet_seconds | int) }}
+
+actions: !input notify_action
