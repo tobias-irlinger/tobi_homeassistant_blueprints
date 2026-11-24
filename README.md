@@ -3,11 +3,11 @@
 Automations-Blueprints für Home Assistant. Import per Klick auf den Button oder über
 *Einstellungen → Automationen & Szenen → Blueprints → Blueprint importieren* mit der jeweiligen URL.
 
-## Sensor-Wächter (veraltete Werte)
+## 📡 Sensor-Wächter
 
-Version 1.1.1 · benötigt Home Assistant 2024.10 oder neuer
+Version 1.2.0 · benötigt Home Assistant 2024.10 oder neuer
 
-Meldet Geräte, deren Sensoren seit einer einstellbaren Zeit nichts mehr gesendet haben – auch wenn der angezeigte Wert noch plausibel aussieht (Prüfung über `last_reported`).
+Meldet Geräte, deren Sensoren seit einer einstellbaren Zeit nichts mehr gesendet haben – auch wenn der angezeigte Wert noch plausibel aussieht (Prüfung über `last_reported`). Auswahl über Geräte, Labels oder einzelne Entitäten; neu verstummte Geräte werden trotz Ruhezeit sofort gemeldet.
 
 [![Blueprint importieren](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Ftobias-irlinger%2Ftobi_homeassistant_blueprints%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fsensor_watchdog.yaml)
 
